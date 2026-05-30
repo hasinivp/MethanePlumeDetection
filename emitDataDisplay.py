@@ -18,11 +18,11 @@ print(len(results))
 
 
 files = earthaccess.open([results[0]])
-print(files)
-print(type(files[0]))
+#print(files)
+#print(type(files[0]))
 
 
-with rasterio.open(files[0]) as src:
+with rasterio.open(files[0]) as src: #rasterio is library for geospatial raster data 
     data = src.read(1)  # Read the first band
 
 
@@ -32,3 +32,7 @@ plt.colorbar(label='CH4 Concentration')
 plt.title('EMIT L2B CH4 Enhancement')
 plt.axis("off")
 plt.show()
+
+print("Min:", np.min(data))
+print("Max:", np.max(data))
+print("Mean:", np.mean(data))
