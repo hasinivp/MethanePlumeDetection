@@ -2,13 +2,13 @@ import earthaccess
 import os
 import numpy as np 
 import rasterio
-from rasterio.features import rasterize
+from rasterio.features import rasterize, shapes
 import matplotlib.pyplot as plt
 import json
 import pprint
 from shapely.geometry import shape #allows coordinate points to be converted into geometric shapes
 
-
+shapes = [] 
 with open("config.json") as f:
     config = json.load(f)
 
@@ -25,42 +25,41 @@ results = earthaccess.search_data( #collects data granules for all files that ma
     )
 
 
+for i, granule in enumerate(results):
 
-file = earthaccess.open([results[0]])
-'''
-with rasterio.open(file[0]) as src: #rasterio is library for geospatial raster data 
-    print("Bands:", src.count)
-    print("Shape:", src.shape)
-    print("CRS:", src.crs)
-    print("Bounds:", src.bounds)
-    print("Transform:", src.transform)
-'''
+    file = earthaccess.open([granule])
 
-metadata = json.load(file[1])
 
-feature = metadata["features"][0]
-polygon = shape(feature["geometry"])
+    metadata = json.load(file[1])
 
-with rasterio.open(file[0]) as src:
-    image = src.read(1)
+    feature = metadata["features"][0]
+    polygon = shape(feature["geometry"])
 
-    mask = rasterize(
-        [(polygon, 1)],
-        out_shape=src.shape,
-        transform=src.transform,
-        fill=0,
-        dtype="uint8" #memory efficient data type for binary masks
+    with rasterio.open(file[0]) as src:
+        image = src.read(1)
+
+        mask = rasterize(
+            [(polygon, 1)],
+            out_shape=src.shape,
+            transform=src.transform,
+            fill=0,
+            dtype="uint8" #memory efficient data type for binary masks
     )
-print(mask.shape)
-print(mask.sum())
+    shapes.append(image.shape) 
+    np.save(f"dataset/images/image_{i}.npy", image) 
+    np.save(f"dataset/masks/mask_{i}.npy", mask) 
 
-plt.figure(figsize=(8, 8))
-plt.imshow(image, cmap="viridis")
-plt.contour(mask, levels=[0.5], colors="red", linewidths=2) #overlays the mask on the image with red contours
-plt.title("Mask Overlay")
-plt.axis("off")
+print(shapes)
+#print(mask.shape)
+#print(mask.sum())
 
-plt.show()
+#plt.figure(figsize=(8, 8))
+#plt.imshow(image, cmap="viridis")
+#plt.contour(mask, levels=[0.5], colors="red", linewidths=2) #overlays the mask on the image with red contours
+#plt.title("Mask Overlay")
+#plt.axis("off")
+
+#plt.show()
 
 
 
