@@ -7,6 +7,14 @@ import os
 from torch.utils.data import DataLoader, random_split
 import matplotlib.pyplot as plt
 
+def get_centroid(mask):
+    rows, cols = np.where(mask > 0)
+    if len(rows) == 0 or len(cols) == 0:
+        return None, None
+    center_row = rows.mean()
+    center_col = cols.mean()
+    return center_row, center_col
+
 dataset = MethaneDataset("dataset/images_resized", "dataset/masks_resized")
 
 dataloader = DataLoader(dataset, batch_size=4, shuffle=True) #batch size is how many samples to load at once, shuffle is to randomize the order of data
@@ -25,28 +33,46 @@ val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
 model = UNet()
 model.load_state_dict(torch.load("unet_epoch_1.pth")) #load the model weights from the first epoch of training
 model.eval() #set the model to evaluation mode
+ious = [] #list to store IoU values for each sample in the validation set
 
-image, mask = val_dataset[0] #get one sample from the validation dataset
 with torch.no_grad(): #no need to compute gradients during inference
-    output = model(image.unsqueeze(0)) #add batch dimension and pass the image through the model
-    predicted_mask = torch.sigmoid(output).squeeze(0).squeeze(0) #apply sigmoid to get probabilities, remove batch and channel dimensions
-    pred_binary = (predicted_mask > 0.5).float() #threshold the probabilities to get binary mask
+    for image, mask in val_loader:
+        output = model(image) #pass the images through the model
+        predicted_mask = torch.sigmoid(output) #apply sigmoid to get probabilities
+        pred_binary = (predicted_mask > 0.5).float() #threshold the probabilities to get binary masks
+        center_row, center_col = get_centroid(pred_binary[0].squeeze(0).numpy()) #get the centroid of the predicted plume for visualization
+        print("Centroid of predicted plume:", center_row, center_col) #print the centroid coordinates of the predicted plume
+        intersection = (pred_binary * mask).sum(dim=(1, 2, 3)) #calculate intersection of predicted and ground truth masks
+        union = (pred_binary + mask).clamp(0, 1).sum(dim=(1, 2, 3)) #calculate union of predicted and ground truth masks
+        iou = intersection / union #calculate IoU metric
+        print("IoU for current batch:", iou.mean().item()) #print the average IoU for the current batch
+        ious.extend(iou.tolist())
+        
+        print("------------------")
+'''
+        plt.figure(figsize=(12,4))
+        plt.subplot(1,3,1)
+        plt.imshow(image[0].squeeze(0).numpy(), cmap="viridis")
+        plt.title("Methane Image")
+        plt.axis("off")
 
-plt.figure(figsize=(12,4))
+        plt.subplot(1,3,2)
+        plt.imshow(mask[0].squeeze(0).numpy(), cmap="gray")
+        plt.title("Ground Truth")
+        plt.axis("off")
 
-plt.subplot(1,3,1)
-plt.imshow(image.squeeze(0), cmap="viridis")
-plt.title("Methane Image")
-plt.axis("off")
+        plt.subplot(1,3,3)
+        plt.imshow(pred_binary[0].squeeze(0).numpy(), cmap="gray")
+        plt.title("Prediction")
+        plt.axis("off")
+        plt.scatter(center_col, center_row, color="red", marker="x", s=100) #mark the center of the predicted plume with a red "x"
 
-plt.subplot(1,3,2)
-plt.imshow(mask.squeeze(0), cmap="gray")
-plt.title("Ground Truth")
-plt.axis("off")
+        plt.show()
+'''
 
-plt.subplot(1,3,3)
-plt.imshow(pred_binary, cmap="gray")
-plt.title("Prediction")
-plt.axis("off")
+print("Mean IoU:", np.mean(ious)) #print the mean IoU across all samples in the validation set
+print("Min IoU:", np.min(ious)) #print the minimum IoU across all samples in the validation set
+print("Max IoU:", np.max(ious)) #print the maximum IoU across all samples in the validation set
 
-plt.show()
+
+
