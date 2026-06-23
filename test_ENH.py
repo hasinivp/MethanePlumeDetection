@@ -8,7 +8,18 @@ import cv2
 from rasterio.features import rasterize, shapes
 from unet import UNet
 from sklearn.decomposition import PCA
-from ERA5_data_test import retrive_era5
+
+
+
+def plume_polygon(pred_binary, transform):
+    
+    mask = pred_binary.squeeze().numpy().astype(np.uint8)
+    polygons = []
+    for geom, value in shapes(mask, mask > 0, transform=transform):
+        if value == 1:
+            polygons.append(geom)
+
+    return polygons
 
 def get_centroid(mask):
     rows, cols = np.where(mask > 0)
@@ -34,7 +45,6 @@ def orientation_difference(plume_angle, wind_angle):
         return min(diff1, diff2)
 
 def plume_pca(pred_binary):
-    
     rows, cols = np.where(pred_binary.squeeze().numpy()>0)
     points = np.column_stack((cols, rows)) #Creates xy coordinates
     #PCA essentially finds line of best fit through the plume
@@ -43,14 +53,14 @@ def plume_pca(pred_binary):
     ratio = pca.explained_variance_ratio_[0]
     if ratio<.6:
         print("orientation unreliable")
-        return None
+        return None, ratio
     else:
         direction_vector = pca.components_[0]
         dx = direction_vector[0]
         dy = direction_vector[1]
         plume_angle = np.degrees(np.arctan2(dy, dx)) % 360
         print(plume_angle)
-        return plume_angle
+        return plume_angle, ratio
 
 
 
@@ -58,7 +68,7 @@ def plume_pca(pred_binary):
 def resize_image(tif_path):
     with rasterio.open(tif_path) as src:
         img = src.read(1)
-        transform = src.transform
+        transform = src.transform #allows pixels to be matched to actual locations
         orig_height = src.height 
         orig_width = src.width
     img[np.isclose(img, -9999, atol=5)] = 0
@@ -90,13 +100,17 @@ print("logged in")
 bbox = (-105, 30, -101,33.5) #bounding box for Permian Basin
 results = earthaccess.search_data( #collects data granules for all files that match the search criteria
     short_name="EMITL2BCH4ENH",
-    bounding_box=bbox
+    bounding_box=bbox,
+    count = 10
     )
-print("Results")
+
+
+print("Results obtained")
 model = UNet()
 model.load_state_dict(torch.load("unet_epoch_1.pth"))
 model.eval()
-
+all_plumes = []
+from ERA5_data_test import retrive_era5
 for i in range (5):
     print(f"\n===== ENH Scene {i} =====")
 
@@ -118,6 +132,8 @@ for i in range (5):
 
     predicted_mask = torch.sigmoid(output)
     pred_binary = (predicted_mask>.5).float()
+    pixel_area = int(pred_binary.sum())
+    polygons = plume_polygon(pred_binary, transform)
     center_row, center_col = get_centroid(pred_binary.squeeze().numpy())
     print(pred_binary.sum())
     from plume_geolocation import pixel_to_latlon
@@ -133,6 +149,39 @@ for i in range (5):
     print("Wind angle: ")
     print(wind_angle)
     print("Plume angle:")
-    plume_angle = plume_pca(pred_binary)
-    print("Difference: " )
-    print(orientation_difference(plume_angle, wind_angle))
+    plume_angle, shape_score = plume_pca(pred_binary)
+    
+    difference = orientation_difference(plume_angle, wind_angle)
+
+    plume_record = {
+    "timestamp": timestamp,
+
+    "centroid_lat": float(lat),
+    "centroid_lon": float(lon),
+
+    "wind_u": float(u),
+    "wind_v": float(v),
+
+    "wind_angle": float(wind_angle),
+
+    "plume_angle":
+        None if plume_angle is None
+        else float(plume_angle),
+
+    "orientation_difference":
+        None if difference is None
+        else float(difference),
+
+    "shape_score": float(shape_score),
+
+    "pixel_area": pixel_area,
+
+    "polygon": polygons
+    }
+
+    all_plumes.append(plume_record)
+
+with open("plume_results.json", "w") as f:
+    json.dump(all_plumes, f, indent=4)
+
+print("Saved plume_results.json")
