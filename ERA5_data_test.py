@@ -33,5 +33,5 @@ def retrive_era5(year, month, day, time, lat, lon):
 
     u = point["u10"].values.item()
     v = point["v10"].values.item()
-    print(u, v)
+  
     return u,v
