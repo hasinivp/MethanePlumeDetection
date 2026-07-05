@@ -134,102 +134,109 @@ with open("config.json") as f:
 os.environ["EARTHDATA_USERNAME"] = config["username"]
 os.environ["EARTHDATA_PASSWORD"] = config["password"]
 
+
 earthaccess.login(strategy="environment")
 print("logged in")
-with open("detections.json ") as f:
-    detections = json.load(f)   
-for detection in detections:
-    lat = detection["lat"]
-    lon = detection["lon"]
-buffer = .02
-bbox = (lat - buffer, lon - buffer, lat + buffer, lon + buffer) #bounding box for Permian Basin
-results = earthaccess.search_data( #collects data granules for all files that match the search criteria
-    short_name="EMITL2BCH4ENH",
-    bounding_box=bbox,
-    count = 10
-    )
 
-
-print("Results obtained")
 model = UNet()
 model.load_state_dict(torch.load("unet_epoch_1.pth"))
 model.eval()
-all_plumes = []
-from ERA5_data_test import retrive_era5
-for i, result in enumerate(results):
-    files = earthaccess.open([result])
-    print(f"\n===== ENH Scene {i} =====")
+with open("detections.json") as f:
+    detections = json.load(f)   
+for box_idx, detection in enumerate(detections):
+    lats = detection["lat"]
+    lons = detection["lon"]
+    lat1 = lats[0]
+    lon1 = lons[0]
+    lat2 = lats[1]
+    lon2 = lons[1]
+    buffer = .02
+    bbox = (lon1 - buffer, lat1 - buffer, lon2 + buffer, lat2 + buffer) #bounding box for Permian Basin 
+    results = earthaccess.search_data( #collects data granules for all files that match the search criteria
+        short_name="EMITL2BCH4ENH",
+        bounding_box=bbox,
+        count = 10
+        )
 
-    timestamp = (results[i]["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
-    from datetime import datetime
 
-    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-
-    year = str(dt.year)
-    month = f"{dt.month:02d}"
-    day = f"{dt.day:02d}"
-    hour = f"{dt.hour:02d}:00"
-
-    files = earthaccess.open([results[i]])
-    image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width = resize_image(files[0])
-
-    with torch.no_grad():
-        output = model(image_tensor)
-
-    predicted_mask = torch.sigmoid(output)
-    pred_binary = (predicted_mask>.5).float()
-    pred_original = restore_original_mask(pred_binary, scale, pad_top, pad_left, orig_height, orig_width)
-    pixel_area = int(pred_original.sum())
-    polygons = plume_polygon(pred_original, transform)
-    center_row, center_col = get_centroid(pred_original)
-    print(pred_original.sum())
-    from plume_geolocation import pixel_to_latlon
-    lat, lon = pixel_to_latlon(center_row, center_col, orig_height, orig_width, transform)
-
-   
-    u, v = retrive_era5(year, month, day, hour, lat, lon)
-    print("U, V:", u, v)
-    print("lat/lon:", lat, lon)
-    print("ERA5 time:", year, month, day, hour)
-
-    wind_angle = np.degrees(np.arctan2(v, u)) % 360
-    print("Wind angle: ")
-    print(wind_angle)
-    print("Plume angle:")
-    plume_angle, shape_score = plume_pca(pred_original)
+    print("Results obtained")
     
-    difference = orientation_difference(plume_angle, wind_angle)
-    mask_filename = f"plume_mask_{i}.tif"
-    save_geotiff(pred_original, transform, crs, mask_filename)
-    plume_record = {
-    "timestamp": timestamp,
+    all_plumes = []
+    from ERA5_data_test import retrive_era5
+    for i, result in enumerate(results):
+        files = earthaccess.open([result])
+        print(f"\n===== ENH Scene {i} =====")
 
-    "centroid_lat": float(lat),
-    "centroid_lon": float(lon),
+        timestamp = (results[i]["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
+        from datetime import datetime
 
-    "wind_u": float(u),
-    "wind_v": float(v),
+        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-    "wind_angle": float(wind_angle),
+        year = str(dt.year)
+        month = f"{dt.month:02d}"
+        day = f"{dt.day:02d}"
+        hour = f"{dt.hour:02d}:00"
 
-    "plume_angle":
-        None if plume_angle is None
-        else float(plume_angle),
+        files = earthaccess.open([results[i]])
+        image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width = resize_image(files[0])
 
-    "orientation_difference":
-        None if difference is None
-        else float(difference),
+        with torch.no_grad():
+            output = model(image_tensor)
 
-    "shape_score": float(shape_score),
+        predicted_mask = torch.sigmoid(output)
+        pred_binary = (predicted_mask>.5).float()
+        pred_original = restore_original_mask(pred_binary, scale, pad_top, pad_left, orig_height, orig_width)
+        pixel_area = int(pred_original.sum())
+        polygons = plume_polygon(pred_original, transform)
+        center_row, center_col = get_centroid(pred_original)
+        print(pred_original.sum())
+        from plume_geolocation import pixel_to_latlon
+        lat, lon = pixel_to_latlon(center_row, center_col, orig_height, orig_width, transform)
 
-    "pixel_area": pixel_area,
-
-    "polygon": polygons,
     
-    "mask_filename": mask_filename,
-    }
+        u, v = retrive_era5(year, month, day, hour, lat, lon)
+        print("U, V:", u, v)
+        print("lat/lon:", lat, lon)
+        print("ERA5 time:", year, month, day, hour)
 
-    all_plumes.append(plume_record)
+        wind_angle = np.degrees(np.arctan2(v, u)) % 360
+        print("Wind angle: ")
+        print(wind_angle)
+        print("Plume angle:")
+        plume_angle, shape_score = plume_pca(pred_original)
+        
+        difference = orientation_difference(plume_angle, wind_angle)
+        mask_filename = f"box_{box_idx}_plume_{i}.tif"
+        save_geotiff(pred_original, transform, crs, mask_filename)
+        plume_record = {
+        "timestamp": timestamp,
+
+        "centroid_lat": float(lat),
+        "centroid_lon": float(lon),
+
+        "wind_u": float(u),
+        "wind_v": float(v),
+
+        "wind_angle": float(wind_angle),
+
+        "plume_angle":
+            None if plume_angle is None
+            else float(plume_angle),
+
+        "orientation_difference":
+            None if difference is None
+            else float(difference),
+
+        "shape_score": float(shape_score),
+
+        "pixel_area": pixel_area,
+
+        "polygon": polygons,
+        
+        "mask_filename": mask_filename,
+        }
+
+        all_plumes.append(plume_record)
 
 with open("plume_results.json", "w") as f:
     json.dump(all_plumes, f, indent=4)
