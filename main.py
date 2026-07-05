@@ -136,8 +136,13 @@ os.environ["EARTHDATA_PASSWORD"] = config["password"]
 
 earthaccess.login(strategy="environment")
 print("logged in")
-
-bbox = (-105, 30, -101,33.5) #bounding box for Permian Basin
+with open("detections.json ") as f:
+    detections = json.load(f)   
+for detection in detections:
+    lat = detection["lat"]
+    lon = detection["lon"]
+buffer = .02
+bbox = (lat - buffer, lon - buffer, lat + buffer, lon + buffer) #bounding box for Permian Basin
 results = earthaccess.search_data( #collects data granules for all files that match the search criteria
     short_name="EMITL2BCH4ENH",
     bounding_box=bbox,
@@ -151,7 +156,8 @@ model.load_state_dict(torch.load("unet_epoch_1.pth"))
 model.eval()
 all_plumes = []
 from ERA5_data_test import retrive_era5
-for i in range (5):
+for i, result in enumerate(results):
+    files = earthaccess.open([result])
     print(f"\n===== ENH Scene {i} =====")
 
     timestamp = (results[i]["umm"]["TemporalExtent"]["RangeDateTime"]["BeginningDateTime"])
