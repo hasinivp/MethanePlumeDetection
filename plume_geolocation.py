@@ -11,5 +11,5 @@ def pixel_to_latlon(row_256, col_256, orig_height, orig_width, transform):
     col_unpadded = col_256 - pad_left
     orig_row = row_unpadded / scale
     orig_col = col_unpadded / scale
-    lat, lon = rasterio.transform.xy(transform, orig_row, orig_col) #convert pixel coordinates to geographic coordinates using the affine transform
+    lon, lat = rasterio.transform.xy(transform, orig_row, orig_col) #convert pixel coordinates to geographic coordinates using the affine transform
     return lat, lon

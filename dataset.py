@@ -3,6 +3,7 @@ import os
 import numpy as np
 from torch.utils.data import Dataset
 
+#how to load one image mask pair
 class MethaneDataset(Dataset):
     def __init__(self, image_dir, mask_dir): #self is instance of class 
         self.image_dir = image_dir 

@@ -9,11 +9,9 @@ earthaccess.login()
 
 bbox = (-105, 30, -101,33.5) #bounding box for Permian Basin
 results = earthaccess.search_data( #collects data granules for all files that match the search criteria
-    short_name="EMITL2BCH4ENH",
+    short_name="EMITL2BCH4PLM",
     bounding_box=bbox
     )
-
-print(len(results))
 
 
 

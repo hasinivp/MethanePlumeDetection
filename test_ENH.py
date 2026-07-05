@@ -11,9 +11,9 @@ from sklearn.decomposition import PCA
 
 
 
-def plume_polygon(pred_binary, transform):
+def plume_polygon(mask, transform):
     
-    mask = pred_binary.squeeze().numpy().astype(np.uint8)
+    mask = mask.astype(np.uint8)
     polygons = []
     for geom, value in shapes(mask, mask > 0, transform=transform):
         if value == 1:
@@ -44,8 +44,8 @@ def orientation_difference(plume_angle, wind_angle):
 
         return min(diff1, diff2)
 
-def plume_pca(pred_binary):
-    rows, cols = np.where(pred_binary.squeeze().numpy()>0)
+def plume_pca(mask):
+    rows, cols = np.where(mask > 0)
     points = np.column_stack((cols, rows)) #Creates xy coordinates
     #PCA essentially finds line of best fit through the plume
     pca = PCA(2) #find the two main directions of the 2D point cloud
@@ -69,6 +69,7 @@ def resize_image(tif_path):
     with rasterio.open(tif_path) as src:
         img = src.read(1)
         transform = src.transform #allows pixels to be matched to actual locations
+        crs = src.crs
         orig_height = src.height 
         orig_width = src.width
     img[np.isclose(img, -9999, atol=5)] = 0
@@ -85,7 +86,46 @@ def resize_image(tif_path):
     image_padded = cv2.copyMakeBorder(image_resized, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=0)
     assert image_padded.shape == (256, 256)
     image_tensor = torch.tensor(image_padded, dtype = torch.float32).unsqueeze(0).unsqueeze(0)
-    return image_tensor, scale, pad_top, pad_left, transform, orig_height, orig_width
+    return image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width
+
+def restore_original_mask(pred_binary, scale, pad_top, pad_left, #restores the mask to the original dimensions of the EMIT image
+                          orig_height, orig_width):
+
+    mask = pred_binary.squeeze().numpy().astype(np.uint8)
+
+    new_height = int(orig_height * scale)
+    new_width = int(orig_width * scale)
+
+    # Remove the padding added before inference
+    mask = mask[
+        pad_top:pad_top + new_height,
+        pad_left:pad_left + new_width
+    ]
+
+    # Resize back to the original EMIT dimensions
+    mask = cv2.resize(
+        mask,
+        (orig_width, orig_height),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    return mask
+
+def save_geotiff(mask, transform, crs, output_file): #save mask as geotiff
+
+    with rasterio.open(
+        output_file,
+        "w",
+        driver="GTiff",
+        height=mask.shape[0],
+        width=mask.shape[1],
+        count=1,
+        dtype=np.uint8,
+        crs=crs,
+        transform=transform,
+    ) as dst:
+
+        dst.write(mask, 1)
 
 print("start")
 with open("config.json") as f:
@@ -125,17 +165,18 @@ for i in range (5):
     hour = f"{dt.hour:02d}:00"
 
     files = earthaccess.open([results[i]])
-    image_tensor, scale, pad_top, pad_left, transform, orig_height, orig_width = resize_image(files[0])
+    image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width = resize_image(files[0])
 
     with torch.no_grad():
         output = model(image_tensor)
 
     predicted_mask = torch.sigmoid(output)
     pred_binary = (predicted_mask>.5).float()
-    pixel_area = int(pred_binary.sum())
-    polygons = plume_polygon(pred_binary, transform)
-    center_row, center_col = get_centroid(pred_binary.squeeze().numpy())
-    print(pred_binary.sum())
+    pred_original = restore_original_mask(pred_binary, scale, pad_top, pad_left, orig_height, orig_width)
+    pixel_area = int(pred_original.sum())
+    polygons = plume_polygon(pred_original, transform)
+    center_row, center_col = get_centroid(pred_original)
+    print(pred_original.sum())
     from plume_geolocation import pixel_to_latlon
     lat, lon = pixel_to_latlon(center_row, center_col, orig_height, orig_width, transform)
 
@@ -149,10 +190,11 @@ for i in range (5):
     print("Wind angle: ")
     print(wind_angle)
     print("Plume angle:")
-    plume_angle, shape_score = plume_pca(pred_binary)
+    plume_angle, shape_score = plume_pca(pred_original)
     
     difference = orientation_difference(plume_angle, wind_angle)
-
+    mask_filename = f"plume_mask_{i}.tif"
+    save_geotiff(pred_original, transform, crs, mask_filename)
     plume_record = {
     "timestamp": timestamp,
 
@@ -176,7 +218,9 @@ for i in range (5):
 
     "pixel_area": pixel_area,
 
-    "polygon": polygons
+    "polygon": polygons,
+    
+    "mask_filename": mask_filename,
     }
 
     all_plumes.append(plume_record)
