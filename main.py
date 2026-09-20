@@ -8,6 +8,8 @@ import cv2
 from rasterio.features import rasterize, shapes
 from unet import UNet
 from sklearn.decomposition import PCA
+from datetime import datetime, timedelta, timezone
+
 
 
 
@@ -86,7 +88,7 @@ def resize_image(tif_path):
     image_padded = cv2.copyMakeBorder(image_resized, pad_top, pad_bottom, pad_left, pad_right, cv2.BORDER_CONSTANT, value=0)
     assert image_padded.shape == (256, 256)
     image_tensor = torch.tensor(image_padded, dtype = torch.float32).unsqueeze(0).unsqueeze(0)
-    return image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width
+    return image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width, img
 
 def restore_original_mask(pred_binary, scale, pad_top, pad_left, #restores the mask to the original dimensions of the EMIT image
                           orig_height, orig_width):
@@ -111,6 +113,21 @@ def restore_original_mask(pred_binary, scale, pad_top, pad_left, #restores the m
 
     return mask
 
+def get_methane_mean(methane_image, mask):
+    valid = (
+        (mask > 0) &
+        np.isfinite(methane_image) &
+        (methane_image != 0) &
+        (methane_image > -9990)
+    )
+
+    values = methane_image[valid]
+
+    if len(values) == 0:
+        return None
+
+    return float(np.mean(values))
+
 def save_geotiff(mask, transform, crs, output_file): #save mask as geotiff
 
     with rasterio.open(
@@ -126,7 +143,9 @@ def save_geotiff(mask, transform, crs, output_file): #save mask as geotiff
     ) as dst:
 
         dst.write(mask, 1)
-
+########################################
+end_date = datetime.now(timezone.utc)
+start_date = end_date - timedelta(days=25)
 print("start")
 with open("config.json") as f:
     config = json.load(f)
@@ -143,25 +162,30 @@ model.load_state_dict(torch.load("unet_epoch_1.pth"))
 model.eval()
 with open("detections.json") as f:
     detections = json.load(f)   
+all_plumes = []
 for box_idx, detection in enumerate(detections):
-    lats = detection["lat"]
-    lons = detection["lon"]
-    lat1 = lats[0]
-    lon1 = lons[0]
-    lat2 = lats[1]
-    lon2 = lons[1]
+    bb = detection["bbox"]
+    lat1 = bb["lat_min"]
+    lat2 = bb["lat_max"]
+    lon1 = bb["lon_min"]
+    lon2 = bb["lon_max"]
     buffer = .02
-    bbox = (lon1 - buffer, lat1 - buffer, lon2 + buffer, lat2 + buffer) #bounding box for Permian Basin 
+    bbox = (lon1 - buffer, lat1 - buffer, lon2 + buffer, lat2 + buffer)
+    print("Searching bbox:", bbox)
+    print("Start:", start_date)
+    print("End:", end_date)
     results = earthaccess.search_data( #collects data granules for all files that match the search criteria
         short_name="EMITL2BCH4ENH",
         bounding_box=bbox,
-        count = 10
+        temporal = (
+            start_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            end_date.strftime("%Y-%m-%dT%H:%M:%SZ")
         )
-
-
+    )
+    print(f"Found {len(results)} results")
     print("Results obtained")
     
-    all_plumes = []
+    
     from ERA5_data_test import retrive_era5
     for i, result in enumerate(results):
         files = earthaccess.open([result])
@@ -178,7 +202,7 @@ for box_idx, detection in enumerate(detections):
         hour = f"{dt.hour:02d}:00"
 
         files = earthaccess.open([results[i]])
-        image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width = resize_image(files[0])
+        image_tensor, scale, pad_top, pad_left, transform, crs, orig_height, orig_width, orig_img = resize_image(files[0])
 
         with torch.no_grad():
             output = model(image_tensor)
@@ -186,6 +210,8 @@ for box_idx, detection in enumerate(detections):
         predicted_mask = torch.sigmoid(output)
         pred_binary = (predicted_mask>.5).float()
         pred_original = restore_original_mask(pred_binary, scale, pad_top, pad_left, orig_height, orig_width)
+        methane_mean = get_methane_mean(orig_img, pred_original)
+        print("Methane mean:", methane_mean)
         pixel_area = int(pred_original.sum())
         polygons = plume_polygon(pred_original, transform)
         center_row, center_col = get_centroid(pred_original)
@@ -213,6 +239,8 @@ for box_idx, detection in enumerate(detections):
 
         "centroid_lat": float(lat),
         "centroid_lon": float(lon),
+
+        "methane_mean": float(methane_mean),
 
         "wind_u": float(u),
         "wind_v": float(v),
